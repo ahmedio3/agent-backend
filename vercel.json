@@ -1,0 +1,24 @@
+{
+  "version": 2,
+  "builds": [
+    {
+      "src": "main.py",
+      "use": "@vercel/python",
+      "config": { "maxLambdaSize": "50mb" }
+    }
+  ],
+  "routes": [{ "src": "/(.*)", "dest": "main.py" }],
+  "functions": {
+    "main.py": {
+      "maxDuration": 300,
+      "memory": 1024
+    }
+  },
+  "env": {
+    "GEMINI_KEYS": "@gemini-keys",
+    "GEMINI_MODEL": "gemini-3.1-flash-lite",
+    "GEMINI_PREMIUM_MODEL": "gemini-3.5-flash",
+    "PREMIUM_RPM": "5",
+    "PREMIUM_RPD": "20"
+  }
+}
