@@ -1,17 +1,17 @@
 """
-Gemini client — three tiers for Vire 2.0.
+Gemini client — three tiers for Veylor 2.0.
 
 Tier        | Planning Agent        | All Other Agents
 ------------|----------------------|------------------
-mini        | gemini-3.1-flash-lite | gemini-3.1-flash-lite
-core        | gemini-3.5-flash      | gemini-3.1-flash-lite
-max         | gemini-3.5-flash      | gemini-3.5-flash
+x1.0        | gemini-3.1-flash-lite | gemini-3.1-flash-lite
+x1.5        | gemini-3.5-flash      | gemini-3.1-flash-lite
+x2.0        | gemini-3.5-flash      | gemini-3.5-flash
 
 Environment variables:
-  GEMINI_KEYS        — keys for mini/core (comma-separated)
-  VIRE_MAX_KEYS      — dedicated keys for max tier (comma-separated)
-  GEMINI_MODEL       — override default lite model
-  GEMINI_MAX_MODEL   — override max/premium model
+  GEMINI_KEYS        — keys for x1.0/x1.5 (comma-separated)
+  VEYLOR_MAX_KEYS    — dedicated keys for x2.0 tier (comma-separated)
+  GEMINI_MODEL       — override default lite model (default: gemini-3.1-flash-lite)
+  GEMINI_MAX_MODEL   — override max/premium model (default: gemini-3.5-flash)
 """
 from __future__ import annotations
 
@@ -63,9 +63,9 @@ def get_lite_rotator() -> KeyRotator:
 def get_max_rotator() -> KeyRotator:
     global _max_rotator
     if _max_rotator is None:
-        # VIRE_MAX_KEYS first, fall back to GEMINI_KEYS
-        if os.getenv("VIRE_MAX_KEYS"):
-            _max_rotator = KeyRotator("VIRE_MAX_KEYS")
+        # VEYLOR_MAX_KEYS first, fall back to GEMINI_KEYS
+        if os.getenv("VEYLOR_MAX_KEYS"):
+            _max_rotator = KeyRotator("VEYLOR_MAX_KEYS")
         else:
             _max_rotator = KeyRotator("GEMINI_KEYS")
     return _max_rotator
@@ -141,7 +141,7 @@ async def call_gemini_text(
     temperature: float = 0.4,
     max_retries: int = 3,
 ) -> tuple[str, int]:
-    """Mini/Core standard call — gemini-3.1-flash-lite, no thinking."""
+    """x1.0 standard call — gemini-3.1-flash-lite, no thinking."""
     return await _call(
         prompt=prompt,
         system_instruction=system_instruction,
@@ -161,12 +161,11 @@ async def call_gemini_premium(
     temperature: float = 0.4,
     max_retries: int = 2,
 ) -> tuple[str, int]:
-    """Core planning call — gemini-3.5-flash with Core rate limiter, falls back to lite."""
+    """x1.5 planning call — gemini-3.5-flash with Core rate limiter, falls back to lite."""
     from core.rate_limiter import get_core_limiter
     limiter = get_core_limiter()
     acquired = await limiter.try_acquire()
     if not acquired:
-        # Rate-limited → fall back to lite
         return await call_gemini_text(
             prompt=prompt,
             system_instruction=system_instruction,
@@ -191,7 +190,7 @@ async def call_gemini_max(
     temperature: float = 0.4,
 ) -> tuple[str, int]:
     """
-    Max tier call — gemini-3.5-flash with per-key rate limiting.
+    x2.0 tier call — gemini-3.5-flash with per-key rate limiting.
     - Respects local rate limits (5 RPM / 20 RPD per key).
     - Also catches Gemini API quota errors and marks the key exhausted,
       then retries with the next available key.
@@ -202,20 +201,19 @@ async def call_gemini_max(
     n_keys = len(limiter._keys)
 
     for attempt in range(n_keys + 1):
-        # Check local rate limits
         result = await limiter.acquire()
         if result is None:
             status = limiter.overall_status()
             if status == "day_exhausted":
                 raise RateLimitError(
-                    "تم استنفاد الحد اليومي لجميع مفاتيح Vire Max (20 طلب/يوم/مفتاح). "
-                    "جرّب Vire Core أو Mini، أو انتظر حتى إعادة التعيين.",
-                    tier="max", reason="day_exhausted",
+                    "تم استنفاد الحد اليومي لجميع مفاتيح Veylor x2.0 (20 طلب/يوم/مفتاح). "
+                    "جرّب Veylor x1.5 أو x1.0، أو انتظر حتى إعادة التعيين.",
+                    tier="x2.0", reason="day_exhausted",
                 )
             raise RateLimitError(
-                "تم الوصول للحد الأقصى في الدقيقة لجميع مفاتيح Vire Max (5 طلبات/دقيقة/مفتاح). "
-                "انتظر دقيقة أو انتقل لـ Vire Core.",
-                tier="max", reason="minute_limited",
+                "تم الوصول للحد الأقصى في الدقيقة لجميع مفاتيح Veylor x2.0 (5 طلبات/دقيقة/مفتاح). "
+                "انتظر دقيقة أو انتقل لـ Veylor x1.5.",
+                tier="x2.0", reason="minute_limited",
             )
 
         api_key, key_idx = result
@@ -242,28 +240,24 @@ async def call_gemini_max(
             ))
 
             if is_quota:
-                # Mark this key as exhausted in local limiter so /usage reflects reality
                 key_limiter = limiter._limiters[key_idx]
                 if is_day_quota:
                     key_limiter.force_mark_day_exhausted()
                 else:
                     key_limiter.force_mark_minute_exhausted()
-                # Try next key on next iteration
                 continue
 
-            # Non-quota error — propagate
             raise
 
-    # All keys tried and all returned quota errors
     raise RateLimitError(
-        "جميع مفاتيح Vire Max تواجه ضغطًا عاليًا من Google API. "
-        "جرّب Vire Core أو Mini للحصول على نتيجة فورية.",
-        tier="max", reason="api_quota_exhausted",
+        "جميع مفاتيح Veylor x2.0 تواجه ضغطًا عاليًا من Google API. "
+        "جرّب Veylor x1.5 أو x1.0 للحصول على نتيجة فورية.",
+        tier="x2.0", reason="api_quota_exhausted",
     )
 
 
 class RateLimitError(Exception):
-    def __init__(self, message: str, tier: str = "max", reason: str = "") -> None:
+    def __init__(self, message: str, tier: str = "x2.0", reason: str = "") -> None:
         super().__init__(message)
         self.tier = tier
         self.reason = reason

@@ -1,6 +1,6 @@
 """
-Vire Agent Backend v2.0 — FastAPI entry point
-==============================================
+Veylor Agent Backend v2.0 — FastAPI entry point
+================================================
 POST /analyze               → plan preview + required inputs
 POST /agent                 → SSE streaming agent run
 POST /agent/tool            → single tool call
@@ -14,6 +14,10 @@ POST /terminal/{id}/ai      → AI terminal assistant
 GET  /terminal/{id}         → session info
 GET  /health                → health check
 GET  /                      → info
+POST /deploy/vercel/{id}    → deploy project to Vercel (SSE)
+GET  /deploy/vercel/status  → check Vercel config
+POST /deploy/github/{id}    → push project to GitHub (SSE)
+GET  /deploy/github/status  → check GitHub config
 """
 from __future__ import annotations
 
@@ -22,6 +26,7 @@ import json
 import os
 import time
 import zipfile
+from pathlib import Path
 from typing import Any, AsyncGenerator
 
 from fastapi import FastAPI, HTTPException
@@ -37,8 +42,14 @@ from core.gemini import RateLimitError, get_lite_rotator
 from core import project_store
 from tools import terminal as term
 
+# ── Tier constants ─────────────────────────────────────────────────────────────
+TIER_X1 = "x1.0"   # Veylor x1.0  — gemini-3.1-flash-lite everywhere
+TIER_X15 = "x1.5"  # Veylor x1.5  — gemini-3.5-flash planner only
+TIER_X2 = "x2.0"   # Veylor x2.0  — gemini-3.5-flash everywhere
+VALID_TIERS = (TIER_X1, TIER_X15, TIER_X2)
+
 app = FastAPI(
-    title="Vire — AI Agent Backend",
+    title="Veylor — AI Agent Backend",
     description="Builds Telegram bots, FastAPI apps, React web apps, and Expo mobile apps",
     version="2.0.0",
 )
@@ -57,18 +68,18 @@ app.add_middleware(
 class AgentRequest(BaseModel):
     prompt: str
     inputs: dict[str, str] | None = None
-    tier: str = "mini"
+    tier: str = TIER_X1
 
 
 class AnalyzeRequest(BaseModel):
     prompt: str
-    tier: str = "mini"
+    tier: str = TIER_X1
 
 
 class ToolRequest(BaseModel):
     tool: str
     params: dict[str, Any]
-    tier: str = "mini"
+    tier: str = TIER_X1
 
 
 class TerminalCreateRequest(BaseModel):
@@ -92,24 +103,38 @@ async def root():
         key_count = get_lite_rotator().total_keys
     except Exception:
         key_count = 0
-    max_keys_loaded = bool(os.getenv("VIRE_MAX_KEYS"))
+    max_keys_loaded = bool(os.getenv("VEYLOR_MAX_KEYS"))
     return {
         "status": "ok",
-        "service": "Vire Agent Backend",
+        "service": "Veylor Agent Backend",
         "version": "2.0.0",
-        "models": {
-            "mini": {"model": os.getenv("GEMINI_MODEL", "gemini-3.1-flash-lite"), "keys": key_count},
-            "core": {"planner": os.getenv("GEMINI_MAX_MODEL", "gemini-3.5-flash"), "others": "gemini-3.1-flash-lite"},
-            "max": {"model": os.getenv("GEMINI_MAX_MODEL", "gemini-3.5-flash"), "dedicated_keys": max_keys_loaded},
+        "tiers": {
+            TIER_X1: {
+                "name": "Veylor x1.0",
+                "model": os.getenv("GEMINI_MODEL", "gemini-3.1-flash-lite"),
+                "keys": key_count,
+            },
+            TIER_X15: {
+                "name": "Veylor x1.5",
+                "planner": os.getenv("GEMINI_MAX_MODEL", "gemini-3.5-flash"),
+                "others": "gemini-3.1-flash-lite",
+            },
+            TIER_X2: {
+                "name": "Veylor x2.0",
+                "model": os.getenv("GEMINI_MAX_MODEL", "gemini-3.5-flash"),
+                "dedicated_keys": max_keys_loaded,
+            },
         },
         "endpoints": {
             "POST /analyze": "Plan preview + required inputs",
-            "POST /agent": "SSE streaming agent run (tier = mini|core|max)",
+            "POST /agent": f"SSE streaming agent run (tier = {TIER_X1}|{TIER_X15}|{TIER_X2})",
             "GET /usage": "Per-key usage stats (JSON)",
-            "GET /project/{id}/download": "Download project as ZIP",
+            "GET /project/{{id}}/download": "Download project as ZIP",
             "POST /terminal": "Create terminal session",
-            "POST /terminal/{id}/exec": "SSE command execution",
-            "POST /terminal/{id}/ai": "AI terminal assistant",
+            "POST /terminal/{{id}}/exec": "SSE command execution",
+            "POST /terminal/{{id}}/ai": "AI terminal assistant",
+            "POST /deploy/vercel/{{id}}": "Deploy to Vercel (SSE)",
+            "POST /deploy/github/{{id}}": "Push to GitHub (SSE)",
         },
         "gemini_keys_loaded": key_count,
     }
@@ -138,12 +163,14 @@ async def usage():
 
     return {
         "tiers": {
-            "mini": {
+            TIER_X1: {
+                "name": "Veylor x1.0",
                 "status": "available",
                 "model": os.getenv("GEMINI_MODEL", "gemini-3.1-flash-lite"),
                 "note": "No rate limits tracked (standard quota)",
             },
-            "core": {
+            TIER_X15: {
+                "name": "Veylor x1.5",
                 "status": core_usage.status,
                 "model": os.getenv("GEMINI_MAX_MODEL", "gemini-3.5-flash"),
                 "planner_only": True,
@@ -155,7 +182,8 @@ async def usage():
                 "reset_minute_ts": core_usage.reset_minute_ts,
                 "reset_day_ts": core_usage.reset_day_ts,
             },
-            "max": {
+            TIER_X2: {
+                "name": "Veylor x2.0",
                 "status": max_status,
                 "model": os.getenv("GEMINI_MAX_MODEL", "gemini-3.5-flash"),
                 "limits": limits,
@@ -181,21 +209,26 @@ async def usage():
 
 @app.post("/analyze")
 async def analyze(req: AnalyzeRequest):
+    tier = req.tier if req.tier in VALID_TIERS else TIER_X1
     try:
-        plan_text, tokens = await run_plan(req.prompt, tier=req.tier)
+        plan_text, tokens = await run_plan(req.prompt, tier=tier)
         missing = orchestrator._detect_missing_inputs(plan_text, {})
         return {
             "plan_preview": plan_text[:600],
             "required_inputs": missing,
             "tokens_used": tokens,
             "ready_to_run": len(missing) == 0,
-            "tier": req.tier,
+            "tier": tier,
         }
     except RateLimitError as e:
         raise HTTPException(
             status_code=429,
-            detail={"error": str(e), "tier": e.tier, "reason": e.reason,
-                    "suggestion": "Try tier=core or tier=mini"},
+            detail={
+                "error": str(e),
+                "tier": e.tier,
+                "reason": e.reason,
+                "suggestion": f"Try tier={TIER_X15} or tier={TIER_X1}",
+            },
         )
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
@@ -208,7 +241,7 @@ async def run_agent(req: AgentRequest):
     if not req.prompt.strip():
         raise HTTPException(status_code=400, detail="prompt cannot be empty")
 
-    tier = req.tier if req.tier in ("mini", "core", "max") else "mini"
+    tier = req.tier if req.tier in VALID_TIERS else TIER_X1
 
     async def event_stream() -> AsyncGenerator[bytes, None]:
         try:
@@ -238,7 +271,8 @@ async def run_agent(req: AgentRequest):
 
 @app.post("/agent/tool")
 async def call_tool(req: ToolRequest):
-    tool, params, tier = req.tool, req.params, req.tier
+    tool, params = req.tool, req.params
+    tier = req.tier if req.tier in VALID_TIERS else TIER_X1
 
     if tool == "plan":
         text, tokens = await run_plan(params.get("description", ""), tier=tier)
@@ -250,7 +284,6 @@ async def call_tool(req: ToolRequest):
         return {"result": text, "tokens_used": tokens}
 
     elif tool == "execute_command":
-        from pathlib import Path
         from tools.exec_tools import execute_command
         project_id = params.get("project_id")
         command = params.get("command", "")
@@ -272,8 +305,8 @@ async def list_projects():
 
 @app.get("/project/{project_id}/files")
 async def list_project_files(project_id: str):
-    path = project_store.get(project_id)
-    if not path or not path.exists():
+    path = _resolve_project_path(project_id)
+    if not path:
         raise HTTPException(status_code=404, detail="Project not found")
     files = []
     for f in sorted(path.rglob("*")):
@@ -286,8 +319,8 @@ async def list_project_files(project_id: str):
 @app.get("/project/{project_id}/download")
 async def download_project(project_id: str):
     """Download all generated project files as a ZIP archive."""
-    path = project_store.get(project_id)
-    if not path or not path.exists():
+    path = _resolve_project_path(project_id)
+    if not path:
         raise HTTPException(status_code=404, detail="Project not found")
 
     buf = io.BytesIO()
@@ -303,7 +336,7 @@ async def download_project(project_id: str):
     return StreamingResponse(
         buf,
         media_type="application/zip",
-        headers={"Content-Disposition": f"attachment; filename=vire_{project_id}.zip"},
+        headers={"Content-Disposition": f"attachment; filename=veylor_{project_id}.zip"},
     )
 
 
@@ -311,9 +344,11 @@ async def download_project(project_id: str):
 
 @app.post("/terminal")
 async def create_terminal(req: TerminalCreateRequest):
-    """Create a new terminal session linked to a generated project."""
-    path = project_store.get(req.project_id)
-    if not path or not path.exists():
+    """Create a new terminal session linked to a generated project.
+    Auto-discovers /tmp/agent_{id} if not in the in-memory store (e.g. after server restart).
+    """
+    path = _resolve_project_path(req.project_id)
+    if not path:
         raise HTTPException(status_code=404, detail=f"Project '{req.project_id}' not found")
     session_id = term.create_session(req.project_id)
     session = term.get_session(session_id)
@@ -363,10 +398,9 @@ async def terminal_ai(session_id: str, req: TerminalAIRequest):
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
 
-    # Load project files for context
     project_files: dict[str, str] = {}
-    path = project_store.get(session["project_id"])
-    if path and path.exists():
+    path = _resolve_project_path(session["project_id"])
+    if path:
         for f in sorted(path.rglob("*")):
             if f.is_file() and f.suffix in (".py", ".ts", ".tsx", ".js", ".json") \
                and not any(p in f.parts for p in ("node_modules", "__pycache__", ".pip_packages")):
@@ -390,15 +424,11 @@ async def terminal_ai(session_id: str, req: TerminalAIRequest):
 
 @app.post("/deploy/vercel/{project_id}")
 async def deploy_vercel(project_id: str):
-    """
-    Deploy a TypeScript project to Vercel.
-    Requires VERCEL_TOKEN env var.
-    Returns SSE stream with build logs and final URL.
-    """
+    """Deploy to Vercel. Requires VERCEL_TOKEN env var. Returns SSE stream."""
     from tools.vercel import deploy_to_vercel
 
-    path = project_store.get(project_id)
-    if not path or not path.exists():
+    path = _resolve_project_path(project_id)
+    if not path:
         raise HTTPException(status_code=404, detail=f"Project '{project_id}' not found")
 
     if not os.getenv("VERCEL_TOKEN"):
@@ -414,18 +444,82 @@ async def deploy_vercel(project_id: str):
     return StreamingResponse(
         stream(),
         media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no", "Connection": "keep-alive"},
     )
 
 
 @app.get("/deploy/vercel/status")
 async def vercel_status():
-    """Check if Vercel deployment is configured."""
     has_token = bool(os.getenv("VERCEL_TOKEN"))
     return {
         "configured": has_token,
-        "message": "Ready" if has_token else "Set VERCEL_TOKEN in Railway to enable deployments",
+        "message": "Ready" if has_token else "Set VERCEL_TOKEN in Railway to enable Vercel deployments",
     }
+
+
+# ── GitHub deploy ─────────────────────────────────────────────────────────────
+
+class GitHubDeployRequest(BaseModel):
+    token: str
+    repo_name: str
+    private: bool = False
+    commit_message: str = "Initial commit from Veylor"
+    branch: str = "main"
+
+
+@app.post("/deploy/github/{project_id}")
+async def deploy_github(project_id: str, req: GitHubDeployRequest):
+    """Push project files to a new or existing GitHub repo. Returns SSE stream."""
+    from tools.github import push_to_github
+
+    path = _resolve_project_path(project_id)
+    if not path:
+        raise HTTPException(status_code=404, detail=f"Project '{project_id}' not found")
+
+    async def stream() -> AsyncGenerator[bytes, None]:
+        async for chunk in push_to_github(
+            project_id=project_id,
+            project_path=path,
+            token=req.token,
+            repo_name=req.repo_name,
+            private=req.private,
+            commit_message=req.commit_message,
+            branch=req.branch,
+        ):
+            yield chunk.encode("utf-8")
+
+    return StreamingResponse(
+        stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no", "Connection": "keep-alive"},
+    )
+
+
+@app.get("/deploy/github/status")
+async def github_status():
+    return {
+        "configured": True,
+        "message": "GitHub deployment uses a per-request token (classic PAT). No server-side config needed.",
+        "required_scopes": ["repo"],
+    }
+
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
+def _resolve_project_path(project_id: str) -> Path | None:
+    """
+    Resolve project path from store or discover from /tmp directly.
+    This handles the case where the server restarted and the in-memory store is empty.
+    """
+    path = project_store.get(project_id)
+    if path and path.exists():
+        return path
+    # Auto-discover: check if /tmp/agent_{project_id} exists on disk
+    fallback = Path(f"/tmp/agent_{project_id}")
+    if fallback.exists():
+        project_store.register(project_id, fallback)
+        return fallback
+    return None
 
 
 if __name__ == "__main__":

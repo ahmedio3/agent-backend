@@ -34,7 +34,7 @@ async def write_file_code(
     project_context: str = "",
     user_inputs: dict[str, str] | None = None,
     project_type: str = "auto",
-    tier: str = "mini",
+    tier: str = "x1.0",
 ) -> tuple[str, int]:
     inputs_section = ""
     if user_inputs:
@@ -54,7 +54,7 @@ async def write_file_code(
 
 اكتب الكود الآن:"""
 
-    if tier == "max":
+    if tier == "x2.0":
         text, tokens = await call_gemini_max(prompt=prompt, system_instruction=SYSTEM, temperature=0.2)
     else:
         text, tokens = await call_gemini_text(prompt=prompt, system_instruction=SYSTEM, temperature=0.2)
@@ -65,7 +65,7 @@ async def patch_code(
     file_path: str,
     current_code: str,
     change_description: str,
-    tier: str = "mini",
+    tier: str = "x1.0",
 ) -> tuple[str, str, int]:
     lang = _detect_lang(file_path)
     prompt = f"""لديك الملف: {file_path}
@@ -87,7 +87,7 @@ NEW_SNIPPET:
 <الكود الجديد>
 ```"""
 
-    if tier == "max":
+    if tier == "x2.0":
         text, tokens = await call_gemini_max(prompt=prompt, system_instruction=SYSTEM, temperature=0.1)
     else:
         text, tokens = await call_gemini_text(prompt=prompt, system_instruction=SYSTEM, temperature=0.1)

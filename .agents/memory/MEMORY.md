@@ -1,0 +1,2 @@
+- [Veylor tier naming](veylor-tiers.md) — old "mini/core/max" renamed to "x1.0/x1.5/x2.0"; VIRE_MAX_KEYS → VEYLOR_MAX_KEYS env var
+- [Terminal 404 fix](terminal-404-fix.md) — in-memory store resets on restart; `_resolve_project_path()` in main.py auto-discovers /tmp/agent_{id} on disk

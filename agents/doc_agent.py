@@ -24,13 +24,12 @@ async def generate_readme(
     project_type: str,
     files: dict[str, str],
     user_inputs: dict[str, str] | None = None,
-    tier: str = "mini",
+    tier: str = "x1.0",
 ) -> tuple[str, int]:
     """Generate a professional README.md for the project."""
     file_list = "\n".join(f"- {name}: {len(code)} chars" for name, code in files.items())
     env_vars = "\n".join(f"- {k}" for k in (user_inputs or {}).keys()) or "لا توجد"
 
-    # Include main file contents for context (truncated)
     main_content = ""
     for priority in ["main.py", "bot.py", "app.py", "src/App.tsx", "app/index.tsx"]:
         if priority in files:
@@ -51,7 +50,7 @@ async def generate_readme(
 
 أنشئ README.md كاملة وجاهزة للنشر:"""
 
-    if tier == "max":
+    if tier == "x2.0":
         return await call_gemini_max(prompt=prompt, system_instruction=SYSTEM, temperature=0.3)
     return await call_gemini_text(prompt=prompt, system_instruction=SYSTEM, temperature=0.3)
 
@@ -59,7 +58,7 @@ async def generate_readme(
 async def generate_api_docs(
     routes: list[dict],
     project_name: str,
-    tier: str = "mini",
+    tier: str = "x1.0",
 ) -> tuple[str, int]:
     """Generate API documentation for FastAPI projects."""
     routes_text = "\n".join(
@@ -76,6 +75,6 @@ async def generate_api_docs(
 - أمثلة Request/Response بـ curl
 - رموز الحالة (Status codes)"""
 
-    if tier == "max":
+    if tier == "x2.0":
         return await call_gemini_max(prompt=prompt, system_instruction=SYSTEM, temperature=0.2)
     return await call_gemini_text(prompt=prompt, system_instruction=SYSTEM, temperature=0.2)

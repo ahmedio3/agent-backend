@@ -22,7 +22,7 @@ async def generate_tests(
     file_path: str,
     file_content: str,
     project_type: str = "fastapi",
-    tier: str = "mini",
+    tier: str = "x1.0",
 ) -> tuple[str, int]:
     """Generate test file for a given source file."""
     lang = "python" if project_type in ("fastapi", "telegram") else "typescript"
@@ -44,7 +44,7 @@ async def generate_tests(
 - حالات الخطأ والـ edge cases
 - Mock للـ external dependencies"""
 
-    if tier == "max":
+    if tier == "x2.0":
         text, tokens = await call_gemini_max(prompt=prompt, system_instruction=SYSTEM, temperature=0.2)
     else:
         text, tokens = await call_gemini_text(prompt=prompt, system_instruction=SYSTEM, temperature=0.2)
@@ -54,7 +54,7 @@ async def generate_tests(
 async def generate_test_suite(
     files: dict[str, str],
     project_type: str,
-    tier: str = "mini",
+    tier: str = "x1.0",
 ) -> dict[str, tuple[str, int]]:
     """Generate tests for all main source files."""
     results = {}
@@ -65,7 +65,7 @@ async def generate_test_suite(
         "expo-mobile": [f for f in files if f.endswith((".ts", ".tsx")) and "test" not in f],
     }.get(project_type, [])
 
-    for file_path in testable[:3]:  # Max 3 files to avoid timeout
+    for file_path in testable[:3]:
         content = files.get(file_path, "")
         if len(content) < 50:
             continue

@@ -16,7 +16,7 @@ async def debug_file(
     current_code: str,
     error_log: str,
     attempt: int = 1,
-    tier: str = "mini",
+    tier: str = "x1.0",
 ) -> tuple[str, str, int]:
     lines = current_code.count("\n")
     use_patch = lines > 80 and attempt > 1
@@ -59,7 +59,7 @@ NEW_SNIPPET:
 
 أعد الكود كاملاً مُصلحاً:"""
 
-    if tier == "max":
+    if tier == "x2.0":
         text, tokens = await call_gemini_max(prompt=prompt, system_instruction=SYSTEM, temperature=0.1)
     else:
         text, tokens = await call_gemini_text(prompt=prompt, system_instruction=SYSTEM, temperature=0.1)

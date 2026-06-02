@@ -12,10 +12,10 @@ SYSTEM = """أنت مساعد برمجي سريع.
 async def ask_assistant(
     task: str,
     context: str = "",
-    tier: str = "mini",
+    tier: str = "x1.0",
 ) -> tuple[str, int]:
     prompt = f"السياق:\n{context}\n\nالمهمة:\n{task}" if context else task
 
-    if tier == "max":
+    if tier == "x2.0":
         return await call_gemini_max(prompt=prompt, system_instruction=SYSTEM, temperature=0.4)
     return await call_gemini_text(prompt=prompt, system_instruction=SYSTEM, temperature=0.4)

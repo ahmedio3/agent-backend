@@ -1,6 +1,6 @@
 """
 Maestro Orchestrator — drives the full agent loop with tier support.
-tier: "mini" | "core" | "max"
+tier: "x1.0" | "x1.5" | "x2.0"
 """
 from __future__ import annotations
 
@@ -25,7 +25,7 @@ MAX_DEBUG_ATTEMPTS = 3
 async def run(
     prompt: str,
     user_inputs: dict[str, str] | None = None,
-    tier: str = "mini",
+    tier: str = "x1.0",
 ) -> AsyncGenerator[str, None]:
     timer = Timer()
     total_tokens = 0
@@ -36,15 +36,19 @@ async def run(
         return make_event(event_type, content=content,
                           time_ms=timer.elapsed_ms(), tokens_used=tokens, **extra)
 
-    tier_label = {"mini": "🔵 Mini", "core": "🟡 Core", "max": "🔴 Max"}.get(tier, tier)
-    yield evt(EventType.LOG, f"🚀 Vire 2.0 {tier_label} | مشروع: {project.project_id}")
+    tier_label = {
+        "x1.0": "🔵 Veylor x1.0",
+        "x1.5": "🟡 Veylor x1.5",
+        "x2.0": "🔴 Veylor x2.0",
+    }.get(tier, tier)
+    yield evt(EventType.LOG, f"🚀 Veylor 2.0 {tier_label} | مشروع: {project.project_id}")
 
     try:
         # ── STEP 1: Planner ───────────────────────────────────────────────────
         model_note = {
-            "mini": "gemini-3.1-flash-lite",
-            "core": "gemini-3.5-flash (planning)",
-            "max": "gemini-3.5-flash (all)",
+            "x1.0": "gemini-3.1-flash-lite",
+            "x1.5": "gemini-3.5-flash (planning)",
+            "x2.0": "gemini-3.5-flash (all)",
         }.get(tier, "")
         yield evt(EventType.TOOL_START, f"📋 المخطط يحلل طلبك ({model_note})...", tool="plan")
         t0 = time.perf_counter()
@@ -151,7 +155,6 @@ async def run(
                       exit_code=code, step_ms=step_ms)
             step_count += 1
 
-            # Expo tunnel
             if project_type == "expo-mobile":
                 import os as _os
                 has_token = bool(_os.getenv("EXPO_TOKEN", ""))
@@ -327,7 +330,6 @@ def _parse_file_list(raw: str) -> list[str]:
 
 
 def _get_file_description(file_path: str, plan_text: str, project_type: str = "auto") -> str:
-    # 1. Try to extract description from the plan text itself
     for pat in [
         rf"(?:ملف|file)[:\s]*`?{re.escape(file_path)}`?[:\s-]+([^\n]+)",
         rf"`?{re.escape(file_path)}`?[:\s-]+([^\n]+)",
@@ -336,7 +338,6 @@ def _get_file_description(file_path: str, plan_text: str, project_type: str = "a
         if m:
             return m.group(1).strip()
 
-    # 2. Lookup by full file path — returns str, NOT nested dict
     path_descriptions: dict[str, str] = {
         "requirements.txt": "قائمة المكتبات Python",
         "package.json": f"قائمة dependencies للمشروع ({project_type})",
@@ -355,7 +356,6 @@ def _get_file_description(file_path: str, plan_text: str, project_type: str = "a
     if file_path in path_descriptions:
         return path_descriptions[file_path]
 
-    # 3. Lookup by file stem (name without extension)
     name = Path(file_path).stem
     stem_descriptions: dict[str, str] = {
         "bot": "الكود الرئيسي لبوت تيليجرام",

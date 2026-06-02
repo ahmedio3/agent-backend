@@ -11,6 +11,9 @@ Flow:
   2. Create a deployment
   3. Stream build events (SSE) back to client
   4. Return final deployment URL
+
+Fix: SSE keepalive pings (": ping\\n\\n") sent every ~10 seconds to prevent
+Railway/proxy timeout on long-running builds.
 """
 from __future__ import annotations
 
@@ -23,7 +26,6 @@ from pathlib import Path
 from typing import AsyncGenerator
 
 
-# Vercel API base
 _API = "https://api.vercel.com"
 
 FRAMEWORK_HINTS: dict[str, str] = {
@@ -61,11 +63,10 @@ def _detect_framework(files: dict[str, str]) -> str:
     for fname, framework in FRAMEWORK_HINTS.items():
         if fname in files:
             return framework
-    return "vite"  # default for React projects
+    return "vite"
 
 
 def _collect_files(project_path: Path) -> dict[str, str]:
-    """Collect all deployable files from the project directory."""
     files: dict[str, str] = {}
     for f in sorted(project_path.rglob("*")):
         if not f.is_file():
@@ -73,7 +74,6 @@ def _collect_files(project_path: Path) -> dict[str, str]:
         if any(p in f.parts for p in SKIP_PATHS):
             continue
         rel = str(f.relative_to(project_path))
-        # Skip large files > 5MB
         if f.stat().st_size > 5 * 1024 * 1024:
             continue
         try:
@@ -108,6 +108,9 @@ async def deploy_to_vercel(
     def evt(data: dict) -> str:
         return f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
 
+    # SSE comment line — keeps the connection alive through proxies / Railway
+    KEEPALIVE = ": ping\n\n"
+
     try:
         token = _token()
     except RuntimeError as e:
@@ -123,7 +126,7 @@ async def deploy_to_vercel(
         return
 
     framework = _detect_framework(files)
-    name = (project_name or f"vire-{project_id}").lower().replace("_", "-")[:50]
+    name = (project_name or f"veylor-{project_id}").lower().replace("_", "-")[:50]
 
     yield evt({"type": "log", "message": f"🔍 Framework: {framework} | Files: {len(files)}", "level": "info"})
 
@@ -139,7 +142,6 @@ async def deploy_to_vercel(
         for path, content in files.items()
     ]
 
-    # Add vercel.json if missing (for Vite projects)
     if "vercel.json" not in files and framework == "vite":
         vercel_files.append({
             "file": "vercel.json",
@@ -165,7 +167,6 @@ async def deploy_to_vercel(
 
     try:
         async with aiohttp.ClientSession() as session:
-            # Create deployment
             async with session.post(
                 f"{_API}/v13/deployments{params}",
                 headers=_headers(),
@@ -197,14 +198,21 @@ async def deploy_to_vercel(
             headers_no_ct = {"Authorization": f"Bearer {token}"}
 
             seen_ids: set[str] = set()
-            deadline = time.time() + 300  # 5 min max
+            deadline = time.time() + 300   # 5 min max
+            last_ping = time.time()
+            last_event_count = 0
 
             while time.time() < deadline:
+                # ── Keepalive ping every 10 seconds to prevent Railway timeout ──
+                if time.time() - last_ping >= 10:
+                    yield KEEPALIVE
+                    last_ping = time.time()
+
                 try:
                     async with session.get(
                         events_url,
                         headers=headers_no_ct,
-                        timeout=aiohttp.ClientTimeout(total=30),
+                        timeout=aiohttp.ClientTimeout(total=20),
                     ) as evresp:
                         if evresp.status != 200:
                             await asyncio.sleep(3)
@@ -214,7 +222,7 @@ async def deploy_to_vercel(
                         events_list = events_data if isinstance(events_data, list) else []
 
                         ready = False
-                        error_seen = False
+                        new_events = 0
 
                         for event in events_list:
                             eid = event.get("id", "")
@@ -223,6 +231,7 @@ async def deploy_to_vercel(
                             if eid:
                                 seen_ids.add(eid)
 
+                            new_events += 1
                             etype = event.get("type", "")
                             payload_data = event.get("payload", {})
                             text = (
@@ -241,14 +250,13 @@ async def deploy_to_vercel(
                                 ready = True
                                 yield evt({"type": "build", "message": "✅ Build اكتمل!", "step": "ready"})
                             elif etype == "error":
-                                error_seen = True
                                 yield evt({"type": "log", "message": f"❌ {text}", "level": "error"})
 
                         if ready:
                             break
 
-                        # Poll deployment status directly if no events yet
-                        if not events_list:
+                        # Poll deployment status if no events
+                        if not events_list or new_events == 0:
                             async with session.get(
                                 f"{_API}/v6/deployments/{deployment_id}{params}",
                                 headers=headers_no_ct,
